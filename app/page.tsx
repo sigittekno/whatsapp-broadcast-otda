@@ -165,7 +165,7 @@ interface Toast {
   type: 'success' | 'error' | 'info';
 }
 
-type NavItem = 'dashboard' | 'recipients' | 'history' | 'birthday' | 'hut' | 'agenda' | 'internal' | 'users';
+type NavItem = 'dashboard' | 'recipients' | 'history' | 'birthday' | 'hut' | 'agenda' | 'internal' | 'users' | 'templates';
 
 interface ContactList {
   id: string;
@@ -181,7 +181,18 @@ interface Recipient {
   listId: string;
   category?: string;
   region?: string;
+  birthDate?: string;
+  regionAnniversaryDate?: string;
   createdAt: any;
+}
+
+interface Template {
+  id: string;
+  name: string;
+  content: string;
+  category: string;
+  createdAt: any;
+  authorUid: string;
 }
 
 interface Broadcast {
@@ -206,6 +217,7 @@ const Sidebar = ({ activeTab, onTabChange, user, isAdmin }: { activeTab: NavItem
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'recipients', label: 'Recipients', icon: Users },
+    { id: 'templates', label: 'Templates', icon: FileUp },
     { id: 'history', label: 'History', icon: History },
   ];
 
@@ -338,6 +350,7 @@ export default function DashboardPage() {
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [contactLists, setContactLists] = useState<ContactList[]>([]);
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [watzapStatus, setWatzapStatus] = useState<any>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -517,6 +530,7 @@ export default function DashboardPage() {
             <AnimatePresence mode="wait">
               {activeTab === 'dashboard' && <DashboardOverview recipients={recipients} broadcasts={broadcasts} watzapStatus={watzapStatus} />}
               {activeTab === 'recipients' && <RecipientManager recipients={recipients} contactLists={contactLists} addToast={addToast} />}
+              {activeTab === 'templates' && <TemplateManager templates={templates} user={user} addToast={addToast} />}
               {activeTab === 'history' && <BroadcastHistory broadcasts={broadcasts} />}
               {activeTab === 'users' && isAdmin && <UserManager addToast={addToast} />}
               {['birthday', 'hut', 'agenda', 'internal'].includes(activeTab) && (
@@ -526,6 +540,7 @@ export default function DashboardPage() {
                     recipients={recipients} 
                     contactLists={contactLists}
                     user={user}
+                    templates={templates}
                     template={selectedTemplate}
                     onSuccess={() => {
                       setIsCreating(false);
@@ -674,12 +689,180 @@ const DashboardOverview = ({ recipients, broadcasts, watzapStatus }: { recipient
   );
 };
 
+// --- Template Manager Component ---
+const TemplateManager = ({ templates, user, addToast }: { templates: Template[], user: User, addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
+  const [isAdding, setIsAdding] = useState(false);
+  const [newTemplate, setNewTemplate] = useState({ name: '', content: '', category: 'Umum' });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'templates'), {
+        ...newTemplate,
+        authorUid: user.uid,
+        createdAt: serverTimestamp()
+      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'templates'));
+      setNewTemplate({ name: '', content: '', category: 'Umum' });
+      setIsAdding(false);
+      addToast('Template berhasil disimpan!', 'success');
+    } catch (error) {
+      addToast('Gagal menyimpan template.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Hapus template ini?')) return;
+    try {
+      await deleteDoc(doc(db, 'templates', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `templates/${id}`));
+      addToast('Template berhasil dihapus.', 'success');
+    } catch (error) {
+      addToast('Gagal menghapus template.', 'error');
+    }
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -20 }}
+      className="space-y-6"
+    >
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Message Templates</h2>
+          <p className="text-gray-500">Kelola template pesan permanen untuk broadcast.</p>
+        </div>
+        <button 
+          onClick={() => setIsAdding(true)}
+          className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700"
+        >
+          <Plus className="w-4 h-4" />
+          Buat Template Baru
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {templates.map((t) => (
+          <motion.div 
+            key={t.id}
+            whileHover={{ y: -4 }}
+            className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 group relative flex flex-col"
+          >
+            <div className="flex justify-between items-start mb-4">
+              <div className="p-3 rounded-xl bg-purple-50 text-purple-600">
+                <FileUp className="w-6 h-6" />
+              </div>
+              <button 
+                onClick={() => handleDelete(t.id)}
+                className="p-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+            <h3 className="text-lg font-bold text-gray-900 mb-1">{t.name}</h3>
+            <span className="text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full w-fit mb-4 uppercase tracking-wider">{t.category}</span>
+            <p className="text-sm text-gray-500 mb-6 line-clamp-4 flex-1 whitespace-pre-wrap">{t.content}</p>
+            <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+              Dibuat: {format(t.createdAt?.toDate() || new Date(), 'dd MMM yyyy')}
+            </div>
+          </motion.div>
+        ))}
+        {templates.length === 0 && (
+          <div className="col-span-full py-12 text-center bg-white rounded-2xl border border-dashed border-gray-200">
+            <FileUp className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+            <p className="text-gray-500">Belum ada template. Silakan buat template baru.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Modal Tambah Template */}
+      <AnimatePresence>
+        {isAdding && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl p-8 max-w-lg w-full shadow-xl"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-gray-900">Buat Template Baru</h3>
+                <button onClick={() => setIsAdding(false)} className="text-gray-400 hover:text-gray-600">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <form onSubmit={handleAdd} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Template</label>
+                  <input 
+                    required
+                    type="text" 
+                    placeholder="Contoh: Ucapan HUT Daerah"
+                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={newTemplate.name}
+                    onChange={(e) => setNewTemplate({ ...newTemplate, name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Kategori</label>
+                  <select 
+                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={newTemplate.category}
+                    onChange={(e) => setNewTemplate({ ...newTemplate, category: e.target.value })}
+                  >
+                    <option value="Umum">Umum</option>
+                    <option value="Ulang Tahun">Ulang Tahun</option>
+                    <option value="HUT Daerah">HUT Daerah</option>
+                    <option value="Agenda">Agenda</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Isi Pesan</label>
+                  <p className="text-[10px] text-gray-400 mb-2">Gunakan variabel: {"{{nama}}"}, {"{{wilayah}}"}, {"{{jabatan}}"}</p>
+                  <textarea 
+                    required
+                    rows={8}
+                    placeholder="Tulis isi pesan template di sini..."
+                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    value={newTemplate.content}
+                    onChange={(e) => setNewTemplate({ ...newTemplate, content: e.target.value })}
+                  />
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    type="button"
+                    onClick={() => setIsAdding(false)}
+                    className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {isSubmitting ? 'Memproses...' : 'Simpan Template'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
 const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: Recipient[], contactLists: ContactList[], addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [isAddingList, setIsAddingList] = useState(false);
   const [newList, setNewList] = useState({ name: '', description: '' });
   const [isAddingRecipient, setIsAddingRecipient] = useState(false);
-  const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', region: '' });
+  const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', region: '', birthDate: '', regionAnniversaryDate: '' });
   const [search, setSearch] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -733,7 +916,7 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
         category: selectedList?.name,
         createdAt: serverTimestamp()
       }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'recipients'));
-      setNewRecipient({ name: '', phone: '', region: '' });
+      setNewRecipient({ name: '', phone: '', region: '', birthDate: '', regionAnniversaryDate: '' });
       setIsAddingRecipient(false);
       addToast('Kontak berhasil ditambahkan!', 'success');
     } catch (error) {
@@ -774,6 +957,8 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
                 listId: selectedListId,
                 category: selectedList?.name,
                 region: row.region || '',
+                birthDate: row.birthDate || '',
+                regionAnniversaryDate: row.regionAnniversaryDate || '',
                 createdAt: serverTimestamp()
               });
               count++;
@@ -901,6 +1086,7 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
                   <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Nama</th>
                   <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Nomor WA</th>
                   <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Wilayah</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Ultah/HUT</th>
                   <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase text-right">Aksi</th>
                 </tr>
               </thead>
@@ -918,6 +1104,13 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
                       <td className="px-6 py-4 text-sm font-medium text-gray-900">{r.name}</td>
                       <td className="px-6 py-4 text-sm text-gray-600">{r.phone}</td>
                       <td className="px-6 py-4 text-sm text-gray-500">{r.region || '-'}</td>
+                      <td className="px-6 py-4 text-sm text-gray-500">
+                        <div className="flex flex-col gap-0.5">
+                          {r.birthDate && <span className="flex items-center gap-1 text-[10px] text-pink-600 font-bold"><Cake className="w-2.5 h-2.5" /> {r.birthDate}</span>}
+                          {r.regionAnniversaryDate && <span className="flex items-center gap-1 text-[10px] text-blue-600 font-bold"><Flag className="w-2.5 h-2.5" /> {r.regionAnniversaryDate}</span>}
+                          {!r.birthDate && !r.regionAnniversaryDate && '-'}
+                        </div>
+                      </td>
                       <td className="px-6 py-4 text-right">
                         <button 
                           onClick={() => handleDeleteRecipient(r.id)}
@@ -1035,6 +1228,28 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
                     value={newRecipient.region}
                     onChange={(e) => setNewRecipient({ ...newRecipient, region: e.target.value })}
                   />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Ultah (MM-DD)</label>
+                    <input 
+                      type="text" 
+                      placeholder="05-12"
+                      className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      value={newRecipient.birthDate}
+                      onChange={(e) => setNewRecipient({ ...newRecipient, birthDate: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">HUT (MM-DD)</label>
+                    <input 
+                      type="text" 
+                      placeholder="08-17"
+                      className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      value={newRecipient.regionAnniversaryDate}
+                      onChange={(e) => setNewRecipient({ ...newRecipient, regionAnniversaryDate: e.target.value })}
+                    />
+                  </div>
                 </div>
                 <div className="flex gap-3 pt-4">
                   <button 
@@ -1158,7 +1373,7 @@ const BroadcastList = ({ type, broadcasts, onCreateNew }: { type: 'birthday' | '
   );
 };
 
-const BroadcastForm = ({ type, recipients, contactLists, user, onSuccess, onCancel, addToast, template }: { type: 'birthday' | 'hut' | 'agenda' | 'internal', recipients: Recipient[], contactLists: ContactList[], user: User, onSuccess: () => void, onCancel: () => void, addToast: (msg: string, type?: 'success' | 'error' | 'info') => void, template?: Broadcast }) => {
+const BroadcastForm = ({ type, recipients, contactLists, user, templates, onSuccess, onCancel, addToast, template }: { type: 'birthday' | 'hut' | 'agenda' | 'internal', recipients: Recipient[], contactLists: ContactList[], user: User, templates: Template[], onSuccess: () => void, onCancel: () => void, addToast: (msg: string, type?: 'success' | 'error' | 'info') => void, template?: Broadcast }) => {
   const [formData, setFormData] = useState({
     title: template?.title || '',
     content: template?.content || '',
@@ -1175,6 +1390,13 @@ const BroadcastForm = ({ type, recipients, contactLists, user, onSuccess, onCanc
   const [searchTerm, setSearchTerm] = useState('');
   const [scheduledDate, setScheduledDate] = useState('');
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
+
+  const handleTemplateSelect = (templateId: string) => {
+    const t = templates.find(temp => temp.id === templateId);
+    if (t) {
+      setFormData(prev => ({ ...prev, content: t.content }));
+    }
+  };
 
   useEffect(() => {
     if (mediaFile) {
@@ -1328,9 +1550,16 @@ const BroadcastForm = ({ type, recipients, contactLists, user, onSuccess, onCanc
       for (let i = 0; i < targetRecipients.length; i++) {
         const r = targetRecipients[i];
         setCurrentRecipient(r.name);
+        
+        // Replace variables in content
+        const personalizedContent = formData.content
+          .replace(/{{nama}}/g, r.name)
+          .replace(/{{wilayah}}/g, r.region || '')
+          .replace(/{{jabatan}}/g, r.category || '');
+
         const res = await sendWatzapMessage(
           r.phone, 
-          formData.content, 
+          personalizedContent, 
           finalMediaUrl || undefined, 
           config.media as any
         );
@@ -1486,6 +1715,18 @@ const BroadcastForm = ({ type, recipients, contactLists, user, onSuccess, onCanc
 
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Isi Pesan (Teks)</label>
+            <div className="mb-2">
+              <select 
+                className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50"
+                onChange={(e) => handleTemplateSelect(e.target.value)}
+                defaultValue=""
+              >
+                <option value="" disabled>Pilih dari Template...</option>
+                {templates.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
             <textarea 
               required
               rows={5}

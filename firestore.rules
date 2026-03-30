@@ -90,6 +90,15 @@ service cloud.firestore {
              data.listId is string &&
              (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
              (!('region' in data) || (data.region is string && data.region.size() < 100)) &&
+             (!('birthDate' in data) || (data.birthDate is string && data.birthDate.matches('^\\d{2}-\\d{2}$'))) &&
+             (!('regionAnniversaryDate' in data) || (data.regionAnniversaryDate is string && data.regionAnniversaryDate.matches('^\\d{2}-\\d{2}$'))) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidTemplate(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.content is string && data.content.size() > 0 && data.content.size() < 5000 &&
+             data.authorUid == request.auth.uid &&
              data.createdAt is timestamp;
     }
 
@@ -129,6 +138,13 @@ service cloud.firestore {
     // Recipients
     match /recipients/{recipientId} {
       allow read, write: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    // Templates
+    match /templates/{templateId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidTemplate(request.resource.data);
       allow delete: if isAdmin();
     }
 

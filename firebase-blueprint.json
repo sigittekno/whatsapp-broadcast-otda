@@ -23,6 +23,8 @@
         "listId": { "type": "string" },
         "category": { "type": "string" },
         "region": { "type": "string" },
+        "birthDate": { "type": "string", "description": "Format: MM-DD" },
+        "regionAnniversaryDate": { "type": "string", "description": "Format: MM-DD" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "phone", "listId"]
@@ -61,6 +63,20 @@
         "sentAt": { "type": "string", "format": "date-time" }
       },
       "required": ["broadcastId", "recipientPhone", "status", "sentAt"]
+    },
+    "Template": {
+      "title": "Template",
+      "description": "A reusable message template.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "content": { "type": "string" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "authorUid": { "type": "string" }
+      },
+      "required": ["name", "content", "createdAt", "authorUid"]
     }
   },
   "firestore": {
@@ -79,6 +95,10 @@
     "/broadcasts/{broadcastId}/logs/{logId}": {
       "schema": "BroadcastLog",
       "description": "Logs for each recipient in a broadcast."
+    },
+    "/templates/{templateId}": {
+      "schema": "Template",
+      "description": "Collection of reusable message templates."
     }
   }
 }
