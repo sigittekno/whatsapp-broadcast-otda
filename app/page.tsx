@@ -214,7 +214,7 @@ interface Broadcast {
 
 // --- Components ---
 
-const Sidebar = ({ activeTab, onTabChange, user, isAdmin }: { activeTab: NavItem, onTabChange: (tab: NavItem) => void, user: User | null, isAdmin: boolean }) => {
+const Sidebar = ({ activeTab, onTabChange, user, isAdmin, permissions }: { activeTab: NavItem, onTabChange: (tab: NavItem) => void, user: User | null, isAdmin: boolean, permissions: any }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'recipients', label: 'Recipients', icon: Users },
@@ -232,6 +232,9 @@ const Sidebar = ({ activeTab, onTabChange, user, isAdmin }: { activeTab: NavItem
     { id: 'agenda', label: 'Agenda Dirjen', icon: Calendar, color: 'text-orange-500', bg: 'bg-orange-50' },
     { id: 'internal', label: 'Internal Otda', icon: Building2, color: 'text-emerald-500', bg: 'bg-emerald-50' },
   ];
+
+  const filteredMenuItems = menuItems.filter(item => isAdmin || permissions?.[item.id] !== false);
+  const filteredBroadcastItems = broadcastItems.filter(item => isAdmin || permissions?.[item.id] !== false);
 
   return (
     <div className="w-64 bg-white border-r border-gray-200 h-screen flex flex-col shadow-sm z-20">
@@ -255,7 +258,7 @@ const Sidebar = ({ activeTab, onTabChange, user, isAdmin }: { activeTab: NavItem
         <div>
           <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-3 px-2">Main Menu</p>
           <div className="space-y-1">
-            {menuItems.map((item) => (
+            {filteredMenuItems.map((item) => (
               <motion.button
                 key={item.id}
                 whileHover={{ x: 4 }}
@@ -278,7 +281,7 @@ const Sidebar = ({ activeTab, onTabChange, user, isAdmin }: { activeTab: NavItem
         <div>
           <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-3 px-2">Broadcast Types</p>
           <div className="space-y-1">
-            {broadcastItems.map((item) => (
+            {filteredBroadcastItems.map((item) => (
               <motion.button
                 key={item.id}
                 whileHover={{ x: 4 }}
@@ -347,6 +350,7 @@ export default function DashboardPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<Broadcast | undefined>(undefined);
   const [user, setUser] = useState<User | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [permissions, setPermissions] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [contactLists, setContactLists] = useState<ContactList[]>([]);
@@ -389,28 +393,78 @@ export default function DashboardPage() {
           try {
             const userRef = doc(db, 'users', u.uid);
             const userSnap = await getDoc(userRef).catch(err => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
-            if (userSnap && !userSnap.exists()) {
-              await setDoc(userRef, {
-                email: u.email,
-                displayName: u.displayName,
-                role: 'admin',
-                createdAt: serverTimestamp()
-              }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${u.uid}`));
+            
+            if (userSnap && userSnap.exists()) {
+              setPermissions(userSnap.data().permissions || null);
+            } else {
+              // Check if there's a pending user doc with this email
+              const q = query(collection(db, 'users'), where('email', '==', u.email));
+              const snap = await getDocs(q).catch(err => handleFirestoreError(err, OperationType.LIST, 'users'));
+              
+              if (snap && !snap.empty) {
+                const pendingDoc = snap.docs[0];
+                const data = pendingDoc.data();
+                // "Claim" the doc by creating a new one with UID and deleting the old one (or just update the old one if we use email as ID)
+                // To keep it simple, let's just update the existing doc with the UID if we were using random IDs, 
+                // but here we want to use UID as the document ID for easy access.
+                await setDoc(userRef, {
+                  ...data,
+                  displayName: u.displayName,
+                  photoURL: u.photoURL,
+                  updatedAt: serverTimestamp()
+                }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${u.uid}`));
+                
+                if (pendingDoc.id !== u.uid) {
+                  await deleteDoc(doc(db, 'users', pendingDoc.id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `users/${pendingDoc.id}`));
+                }
+                setPermissions(data.permissions || null);
+              } else {
+                await setDoc(userRef, {
+                  email: u.email,
+                  displayName: u.displayName,
+                  role: 'admin',
+                  createdAt: serverTimestamp()
+                }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${u.uid}`));
+              }
             }
           } catch (e) {
             console.error("Error setting up admin user:", e);
           }
         } else {
-          // Check database for role
+          // Check database for role and permissions
           try {
-            const userSnap = await getDoc(doc(db, 'users', u.uid)).catch(err => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
-            if (userSnap && userSnap.exists() && userSnap.data().role === 'admin') {
-              setIsAdmin(true);
+            const userRef = doc(db, 'users', u.uid);
+            let userSnap = await getDoc(userRef).catch(err => handleFirestoreError(err, OperationType.GET, `users/${u.uid}`));
+            
+            if (userSnap && userSnap.exists()) {
+              const data = userSnap.data();
+              setPermissions(data.permissions || null);
+              setIsAdmin(data.role === 'admin');
             } else {
-              setIsAdmin(false);
-              // Create default user doc if not exists
-              if (userSnap && !userSnap.exists()) {
-                await setDoc(doc(db, 'users', u.uid), {
+              // Check if there's a pending user doc with this email
+              const q = query(collection(db, 'users'), where('email', '==', u.email));
+              const snap = await getDocs(q).catch(err => handleFirestoreError(err, OperationType.LIST, 'users'));
+              
+              if (snap && !snap.empty) {
+                const pendingDoc = snap.docs[0];
+                const data = pendingDoc.data();
+                await setDoc(userRef, {
+                  ...data,
+                  displayName: u.displayName,
+                  photoURL: u.photoURL,
+                  updatedAt: serverTimestamp()
+                }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${u.uid}`));
+                
+                if (pendingDoc.id !== u.uid) {
+                  await deleteDoc(doc(db, 'users', pendingDoc.id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `users/${pendingDoc.id}`));
+                }
+                setPermissions(data.permissions || null);
+                setIsAdmin(data.role === 'admin');
+              } else {
+                setIsAdmin(false);
+                setPermissions(null);
+                // Create default user doc
+                await setDoc(userRef, {
                   email: u.email,
                   displayName: u.displayName,
                   role: 'user',
@@ -419,12 +473,13 @@ export default function DashboardPage() {
               }
             }
           } catch (e) {
-            console.error("Error checking admin status:", e);
+            console.error("Error checking user status:", e);
             setIsAdmin(false);
           }
         }
       } else {
         setIsAdmin(false);
+        setPermissions(null);
       }
       setLoading(false);
     });
@@ -485,7 +540,7 @@ export default function DashboardPage() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen bg-gray-50 overflow-hidden font-sans">
-        <Sidebar activeTab={activeTab} onTabChange={handleTabChange} user={user} isAdmin={isAdmin} />
+        <Sidebar activeTab={activeTab} onTabChange={handleTabChange} user={user} isAdmin={isAdmin} permissions={permissions} />
         
         <main className="flex-1 overflow-y-auto relative">
           {/* Toast Notifications */}
@@ -522,7 +577,7 @@ export default function DashboardPage() {
           <div className="p-8 max-w-7xl mx-auto">
             <AnimatePresence mode="wait">
               {activeTab === 'dashboard' && <DashboardOverview recipients={recipients} broadcasts={broadcasts} watzapStatus={watzapStatus} />}
-              {activeTab === 'recipients' && <RecipientManager recipients={recipients} contactLists={contactLists} addToast={addToast} />}
+              {activeTab === 'recipients' && <RecipientManager recipients={recipients} contactLists={contactLists} setRecipients={setRecipients} setContactLists={setContactLists} addToast={addToast} />}
               {activeTab === 'templates' && <TemplateManager templates={templates} user={user} addToast={addToast} />}
               {activeTab === 'history' && <BroadcastHistory broadcasts={broadcasts} />}
               {activeTab === 'users' && isAdmin && <UserManager addToast={addToast} />}
@@ -682,11 +737,81 @@ const DashboardOverview = ({ recipients, broadcasts, watzapStatus }: { recipient
   );
 };
 
+// --- Confirmation Modal Component ---
+const ConfirmationModal = ({ 
+  isOpen, 
+  onClose, 
+  onConfirm, 
+  title, 
+  message, 
+  confirmText = "Hapus", 
+  cancelText = "Batal",
+  type = 'danger'
+}: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  onConfirm: () => void, 
+  title: string, 
+  message: string, 
+  confirmText?: string, 
+  cancelText?: string,
+  type?: 'danger' | 'warning' | 'info'
+}) => {
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+            className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden"
+          >
+            <div className="p-8">
+              <div className={cn(
+                "w-16 h-16 rounded-2xl flex items-center justify-center mb-6",
+                type === 'danger' ? "bg-red-50 text-red-600" : 
+                type === 'warning' ? "bg-yellow-50 text-yellow-600" : "bg-blue-50 text-blue-600"
+              )}>
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-2">{title}</h3>
+              <p className="text-gray-600 leading-relaxed">{message}</p>
+            </div>
+            <div className="p-6 bg-gray-50 flex gap-3">
+              <button 
+                onClick={onClose}
+                className="flex-1 px-6 py-3 rounded-xl font-bold text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                {cancelText}
+              </button>
+              <button 
+                onClick={() => {
+                  onConfirm();
+                  onClose();
+                }}
+                className={cn(
+                  "flex-1 px-6 py-3 rounded-xl font-bold text-white transition-colors",
+                  type === 'danger' ? "bg-red-600 hover:bg-red-700" : 
+                  type === 'warning' ? "bg-yellow-600 hover:bg-yellow-700" : "bg-blue-600 hover:bg-blue-700"
+                )}
+              >
+                {confirmText}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+};
+
 // --- Template Manager Component ---
 const TemplateManager = ({ templates, user, addToast }: { templates: Template[], user: User, addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [newTemplate, setNewTemplate] = useState({ name: '', content: '', category: 'Umum' });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{ isOpen: boolean, id: string }>({ isOpen: false, id: '' });
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -708,7 +833,6 @@ const TemplateManager = ({ templates, user, addToast }: { templates: Template[],
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Hapus template ini?')) return;
     try {
       await deleteDoc(doc(db, 'templates', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `templates/${id}`));
       addToast('Template berhasil dihapus.', 'success');
@@ -738,6 +862,14 @@ const TemplateManager = ({ templates, user, addToast }: { templates: Template[],
         </button>
       </div>
 
+      <ConfirmationModal 
+        isOpen={confirmDelete.isOpen}
+        onClose={() => setConfirmDelete({ isOpen: false, id: '' })}
+        onConfirm={() => handleDelete(confirmDelete.id)}
+        title="Hapus Template"
+        message="Apakah Anda yakin ingin menghapus template ini? Tindakan ini tidak dapat dibatalkan."
+      />
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {templates.map((t) => (
           <motion.div 
@@ -750,7 +882,7 @@ const TemplateManager = ({ templates, user, addToast }: { templates: Template[],
                 <FileUp className="w-6 h-6" />
               </div>
               <button 
-                onClick={() => handleDelete(t.id)}
+                onClick={() => setConfirmDelete({ isOpen: true, id: t.id })}
                 className="p-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
               >
                 <Trash2 className="w-4 h-4" />
@@ -850,7 +982,19 @@ const TemplateManager = ({ templates, user, addToast }: { templates: Template[],
   );
 };
 
-const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: Recipient[], contactLists: ContactList[], addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
+const RecipientManager = ({ 
+  recipients, 
+  contactLists, 
+  setRecipients, 
+  setContactLists, 
+  addToast 
+}: { 
+  recipients: Recipient[], 
+  contactLists: ContactList[], 
+  setRecipients: React.Dispatch<React.SetStateAction<Recipient[]>>, 
+  setContactLists: React.Dispatch<React.SetStateAction<ContactList[]>>, 
+  addToast: (msg: string, type?: 'success' | 'error' | 'info') => void 
+}) => {
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [isAddingList, setIsAddingList] = useState(false);
   const [newList, setNewList] = useState({ name: '', description: '' });
@@ -858,6 +1002,8 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
   const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', region: '', birthDate: '', regionAnniversaryDate: '' });
   const [search, setSearch] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [confirmDeleteList, setConfirmDeleteList] = useState<{ isOpen: boolean, id: string }>({ isOpen: false, id: '' });
+  const [confirmDeleteRecipient, setConfirmDeleteRecipient] = useState<{ isOpen: boolean, id: string }>({ isOpen: false, id: '' });
 
   const selectedList = contactLists.find(l => l.id === selectedListId);
   
@@ -976,6 +1122,22 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
         )}
       </div>
 
+      <ConfirmationModal 
+        isOpen={confirmDeleteList.isOpen}
+        onClose={() => setConfirmDeleteList({ isOpen: false, id: '' })}
+        onConfirm={() => handleDeleteList(confirmDeleteList.id)}
+        title="Hapus Daftar Kontak"
+        message="Apakah Anda yakin ingin menghapus daftar kontak ini? Kontak di dalamnya akan tetap ada di database tapi tidak terasosiasi dengan daftar ini."
+      />
+
+      <ConfirmationModal 
+        isOpen={confirmDeleteRecipient.isOpen}
+        onClose={() => setConfirmDeleteRecipient({ isOpen: false, id: '' })}
+        onConfirm={() => handleDeleteRecipient(confirmDeleteRecipient.id)}
+        title="Hapus Kontak"
+        message="Apakah Anda yakin ingin menghapus kontak ini? Tindakan ini tidak dapat dibatalkan."
+      />
+
       {!selectedListId ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {contactLists.map((list) => (
@@ -989,7 +1151,7 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
                   <Users className="w-6 h-6" />
                 </div>
                 <button 
-                  onClick={(e) => { e.stopPropagation(); handleDeleteList(list.id); }}
+                  onClick={(e) => { e.stopPropagation(); setConfirmDeleteList({ isOpen: true, id: list.id }); }}
                   className="p-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -1093,7 +1255,7 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
                       </td>
                       <td className="px-6 py-4 text-right">
                         <button 
-                          onClick={() => handleDeleteRecipient(r.id)}
+                          onClick={() => setConfirmDeleteRecipient({ isOpen: true, id: r.id })}
                           className="p-2 text-gray-400 hover:text-red-500 transition-colors"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -1938,6 +2100,26 @@ const BroadcastHistory = ({ broadcasts }: { broadcasts: Broadcast[] }) => {
 const UserManager = ({ addToast }: { addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [confirmRole, setConfirmRole] = useState<{ isOpen: boolean, id: string, currentRole: string }>({ isOpen: false, id: '', currentRole: '' });
+  const [confirmDelete, setConfirmDelete] = useState<{ isOpen: boolean, id: string }>({ isOpen: false, id: '' });
+  
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserRole, setNewUserRole] = useState('user');
+  
+  const [managingPermissions, setManagingPermissions] = useState<{ isOpen: boolean, user: any | null }>({ isOpen: false, user: null });
+
+  const MODULES = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'recipients', label: 'Recipients' },
+    { id: 'templates', label: 'Templates' },
+    { id: 'history', label: 'History' },
+    { id: 'birthday', label: 'Ulang Tahun' },
+    { id: 'hut', label: 'HUT Daerah' },
+    { id: 'agenda', label: 'Agenda Dirjen' },
+    { id: 'internal', label: 'Internal Otda' },
+  ];
 
   useEffect(() => {
     const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
@@ -1950,8 +2132,63 @@ const UserManager = ({ addToast }: { addToast: (msg: string, type?: 'success' | 
     return () => unsub();
   }, []);
 
+  const handleAddUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserEmail) return;
+    
+    try {
+      // Check if user already exists
+      const q = query(collection(db, 'users'), where('email', '==', newUserEmail));
+      const snap = await getDocs(q).catch(err => handleFirestoreError(err, OperationType.LIST, 'users'));
+      
+      if (snap && !snap.empty) {
+        addToast('User dengan email ini sudah terdaftar.', 'error');
+        return;
+      }
+
+      const defaultPermissions = MODULES.reduce((acc, mod) => ({ ...acc, [mod.id]: true }), {});
+
+      await addDoc(collection(db, 'users'), {
+        email: newUserEmail,
+        role: newUserRole,
+        permissions: defaultPermissions,
+        createdAt: serverTimestamp(),
+        displayName: 'Pending User'
+      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'users'));
+
+      setNewUserEmail('');
+      setIsAddingUser(false);
+      addToast('User berhasil ditambahkan!', 'success');
+    } catch (error) {
+      addToast('Gagal menambahkan user.', 'error');
+    }
+  };
+
+  const togglePermission = async (userId: string, moduleId: string, currentStatus: boolean) => {
+    try {
+      const user = users.find(u => u.id === userId);
+      const newPermissions = { 
+        ...(user.permissions || {}), 
+        [moduleId]: !currentStatus 
+      };
+      
+      await updateDoc(doc(db, 'users', userId), { 
+        permissions: newPermissions 
+      }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`));
+      
+      // Update local state for the modal if it's open
+      if (managingPermissions.user?.id === userId) {
+        setManagingPermissions(prev => ({
+          ...prev,
+          user: { ...prev.user, permissions: newPermissions }
+        }));
+      }
+    } catch (error) {
+      addToast('Gagal memperbarui hak akses.', 'error');
+    }
+  };
+
   const toggleRole = async (userId: string, currentRole: string) => {
-    if (!confirm('Ubah role user ini?')) return;
     try {
       const newRole = currentRole === 'admin' ? 'user' : 'admin';
       await updateDoc(doc(db, 'users', userId), { role: newRole }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`));
@@ -1961,6 +2198,20 @@ const UserManager = ({ addToast }: { addToast: (msg: string, type?: 'success' | 
     }
   };
 
+  const deleteUser = async (userId: string) => {
+    try {
+      await deleteDoc(doc(db, 'users', userId)).catch(err => handleFirestoreError(err, OperationType.DELETE, `users/${userId}`));
+      addToast('User berhasil dihapus.', 'success');
+    } catch (error) {
+      addToast('Gagal menghapus user.', 'error');
+    }
+  };
+
+  const filteredUsers = users.filter(u => 
+    u.displayName?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    u.email?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <motion.div 
       initial={{ opacity: 0, x: 20 }}
@@ -1968,48 +2219,277 @@ const UserManager = ({ addToast }: { addToast: (msg: string, type?: 'success' | 
       exit={{ opacity: 0, x: -20 }}
       className="space-y-6"
     >
-      <div>
-        <h2 className="text-2xl font-bold text-gray-900">User Management</h2>
-        <p className="text-gray-500">Kelola hak akses admin dashboard.</p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">User Management</h2>
+          <p className="text-gray-500">Kelola hak akses dan peran pengguna dashboard.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative w-full md:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input 
+              type="text" 
+              placeholder="Cari nama atau email..."
+              className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <button 
+            onClick={() => setIsAddingUser(true)}
+            className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            Tambah User
+          </button>
+        </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="bg-gray-50 border-bottom border-gray-100">
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Name</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Email</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Role</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {users.map((u) => (
-              <tr key={u.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4 text-sm font-medium text-gray-900">{u.displayName}</td>
-                <td className="px-6 py-4 text-sm text-gray-600">{u.email}</td>
-                <td className="px-6 py-4">
-                  <span className={cn(
-                    "px-2 py-1 rounded-full text-[10px] font-bold uppercase",
-                    u.role === 'admin' ? "bg-purple-100 text-purple-700" : "bg-gray-100 text-gray-700"
-                  )}>
-                    {u.role}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  {u.email !== "sigittekno565@gmail.com" && (
-                    <button 
-                      onClick={() => toggleRole(u.id, u.role)}
-                      className="text-xs font-bold text-blue-600 hover:underline"
-                    >
-                      Ubah ke {u.role === 'admin' ? 'User' : 'Admin'}
-                    </button>
-                  )}
-                </td>
+      <ConfirmationModal 
+        isOpen={confirmRole.isOpen}
+        onClose={() => setConfirmRole({ isOpen: false, id: '', currentRole: '' })}
+        onConfirm={() => toggleRole(confirmRole.id, confirmRole.currentRole)}
+        title="Ubah Role User"
+        message={`Apakah Anda yakin ingin mengubah role user ini menjadi ${confirmRole.currentRole === 'admin' ? 'User' : 'Admin'}?`}
+        type="warning"
+        confirmText="Ubah"
+      />
+
+      <ConfirmationModal 
+        isOpen={confirmDelete.isOpen}
+        onClose={() => setConfirmDelete({ isOpen: false, id: '' })}
+        onConfirm={() => deleteUser(confirmDelete.id)}
+        title="Hapus User"
+        message="Apakah Anda yakin ingin menghapus user ini dari dashboard? User ini tidak akan bisa mengakses fitur admin lagi."
+      />
+
+      {/* Add User Modal */}
+      <AnimatePresence>
+        {isAddingUser && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+                <h3 className="text-xl font-bold text-gray-900">Tambah User Baru</h3>
+                <button onClick={() => setIsAddingUser(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+              <form onSubmit={handleAddUser} className="p-6 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Email Address</label>
+                  <input 
+                    type="email" 
+                    required
+                    placeholder="user@example.com"
+                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Role</label>
+                  <select 
+                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    value={newUserRole}
+                    onChange={(e) => setNewUserRole(e.target.value)}
+                  >
+                    <option value="user">User</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                <div className="pt-4 flex gap-3">
+                  <button 
+                    type="button"
+                    onClick={() => setIsAddingUser(false)}
+                    className="flex-1 px-4 py-3 border border-gray-200 text-gray-600 rounded-xl font-bold hover:bg-gray-50 transition-colors"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit"
+                    className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-100"
+                  >
+                    Tambah User
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Manage Permissions Modal */}
+      <AnimatePresence>
+        {managingPermissions.isOpen && managingPermissions.user && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden"
+            >
+              <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Kelola Hak Akses</h3>
+                  <p className="text-xs text-gray-500">{managingPermissions.user.email}</p>
+                </div>
+                <button onClick={() => setManagingPermissions({ isOpen: false, user: null })} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+              <div className="p-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {MODULES.map((mod) => {
+                    const hasAccess = managingPermissions.user.permissions?.[mod.id] ?? true;
+                    return (
+                      <div 
+                        key={mod.id}
+                        onClick={() => togglePermission(managingPermissions.user.id, mod.id, hasAccess)}
+                        className={cn(
+                          "flex items-center justify-between p-4 rounded-2xl border cursor-pointer transition-all",
+                          hasAccess ? "bg-blue-50 border-blue-200" : "bg-gray-50 border-gray-100 opacity-60"
+                        )}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={cn(
+                            "w-8 h-8 rounded-lg flex items-center justify-center",
+                            hasAccess ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-400"
+                          )}>
+                            {hasAccess ? <CheckCheck className="w-4 h-4" /> : <X className="w-4 h-4" />}
+                          </div>
+                          <span className={cn("text-sm font-bold", hasAccess ? "text-blue-900" : "text-gray-500")}>
+                            {mod.label}
+                          </span>
+                        </div>
+                        <div className={cn(
+                          "w-10 h-5 rounded-full relative transition-colors",
+                          hasAccess ? "bg-blue-600" : "bg-gray-300"
+                        )}>
+                          <div className={cn(
+                            "absolute top-1 w-3 h-3 bg-white rounded-full transition-all",
+                            hasAccess ? "right-1" : "left-1"
+                          )} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-8">
+                  <button 
+                    onClick={() => setManagingPermissions({ isOpen: false, user: null })}
+                    className="w-full py-3 bg-gray-900 text-white rounded-xl font-bold hover:bg-black transition-colors"
+                  >
+                    Selesai
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-gray-50/50 border-b border-gray-100">
+                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">User</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Role</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest text-center">Modules</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Joined</th>
+                <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest text-right">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="px-6 py-12 text-center">
+                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin mx-auto mb-2" />
+                    <p className="text-sm text-gray-500">Memuat data pengguna...</p>
+                  </td>
+                </tr>
+              ) : filteredUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-6 py-12 text-center text-gray-500 italic">
+                    Tidak ada pengguna ditemukan.
+                  </td>
+                </tr>
+              ) : (
+                filteredUsers.map((u) => (
+                  <tr key={u.id} className="hover:bg-gray-50/50 transition-colors group">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 font-bold text-sm">
+                          {u.displayName?.charAt(0) || u.email?.charAt(0) || '?'}
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-gray-900">{u.displayName || 'No Name'}</p>
+                          <p className="text-xs text-gray-500">{u.email}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={cn(
+                        "px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                        u.role === 'admin' 
+                          ? "bg-purple-100 text-purple-700 border border-purple-200" 
+                          : "bg-blue-100 text-blue-700 border border-blue-200"
+                      )}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex justify-center">
+                        <button 
+                          onClick={() => setManagingPermissions({ isOpen: true, user: u })}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 text-gray-600 rounded-lg text-[10px] font-bold uppercase hover:bg-blue-50 hover:text-blue-600 transition-colors border border-gray-100"
+                        >
+                          <CheckCheck className="w-3 h-3" />
+                          {Object.values(u.permissions || {}).filter(v => v).length} / {MODULES.length}
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <p className="text-xs text-gray-500">
+                        {u.createdAt ? format(u.createdAt.toDate(), 'dd MMM yyyy') : '-'}
+                      </p>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {u.email !== "sigittekno565@gmail.com" && (
+                          <>
+                            <button 
+                              onClick={() => setConfirmRole({ isOpen: true, id: u.id, currentRole: u.role })}
+                              title={`Ubah ke ${u.role === 'admin' ? 'User' : 'Admin'}`}
+                              className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                            >
+                              <Filter className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={() => setConfirmDelete({ isOpen: true, id: u.id })}
+                              title="Hapus User"
+                              className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                        {u.email === "sigittekno565@gmail.com" && (
+                          <span className="text-[10px] font-bold text-gray-300 uppercase tracking-widest">Super Admin</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </motion.div>
   );
