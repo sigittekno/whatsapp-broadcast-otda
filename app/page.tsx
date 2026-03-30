@@ -29,18 +29,20 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   collection, 
   query, 
+  orderBy, 
   onSnapshot, 
+  doc, 
+  getDoc, 
+  setDoc, 
   addDoc, 
   updateDoc, 
   deleteDoc, 
-  doc, 
-  serverTimestamp, 
-  orderBy, 
-  limit,
-  where,
   getDocs,
-  writeBatch,
-  Timestamp
+  serverTimestamp, 
+  Timestamp, 
+  limit, 
+  where,
+  writeBatch 
 } from 'firebase/firestore';
 import { 
   signInWithPopup, 
@@ -54,8 +56,7 @@ import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 import Papa from 'papaparse';
-import { sendWatzapMessage, checkWatzapStatus } from '@/lib/watzap';
-import { getDoc, setDoc, getDocFromServer } from 'firebase/firestore';
+import { apiClient } from '@/lib/api-client';
 
 // --- Error Handling ---
 
@@ -433,34 +434,26 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user) return;
 
-    const qRecipients = query(collection(db, 'recipients'), orderBy('createdAt', 'desc'));
-    const unsubRecipients = onSnapshot(qRecipients, (snapshot) => {
-      setRecipients(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Recipient)));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'recipients');
-    });
-
-    const qLists = query(collection(db, 'contact_lists'), orderBy('createdAt', 'desc'));
-    const unsubLists = onSnapshot(qLists, (snapshot) => {
-      setContactLists(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ContactList)));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'contact_lists');
-    });
-
-    const qBroadcasts = query(collection(db, 'broadcasts'), orderBy('createdAt', 'desc'), limit(50));
-    const unsubBroadcasts = onSnapshot(qBroadcasts, (snapshot) => {
-      setBroadcasts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Broadcast)));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'broadcasts');
-    });
-
-    checkWatzapStatus().then(setWatzapStatus);
-
-    return () => {
-      unsubRecipients();
-      unsubLists();
-      unsubBroadcasts();
+    const fetchData = async () => {
+      try {
+        const [recipientsData, listsData, broadcastsData] = await Promise.all([
+          apiClient.get('/contact-lists/all/recipients'), // Adjust endpoint as needed
+          apiClient.get('/contact-lists'),
+          apiClient.get('/broadcasts')
+        ]);
+        setRecipients(recipientsData);
+        setContactLists(listsData);
+        setBroadcasts(broadcastsData);
+      } catch (error) {
+        console.error("Error fetching data:", error);
+      }
     };
+
+    fetchData();
+
+    // Check Watzap status via Laravel or direct
+    apiClient.get('/watzap/status').then(setWatzapStatus).catch(() => setWatzapStatus({ status: 'error' }));
+
   }, [user]);
 
   if (loading) {
@@ -876,102 +869,89 @@ const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: 
     });
   }, [recipients, selectedListId, search]);
 
-  const handleAddList = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    try {
-      await addDoc(collection(db, 'contact_lists'), {
-        ...newList,
-        createdAt: serverTimestamp()
-      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'contact_lists'));
-      setNewList({ name: '', description: '' });
-      setIsAddingList(false);
-      addToast('Daftar kontak berhasil dibuat!', 'success');
-    } catch (error) {
-      addToast('Gagal membuat daftar kontak.', 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleDeleteList = async (id: string) => {
-    if (!confirm('Hapus daftar kontak ini? Kontak di dalamnya akan tetap ada di database tapi tidak terasosiasi dengan daftar ini.')) return;
-    try {
-      await deleteDoc(doc(db, 'contact_lists', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `contact_lists/${id}`));
-      if (selectedListId === id) setSelectedListId(null);
-      addToast('Daftar kontak berhasil dihapus.', 'success');
-    } catch (error) {
-      addToast('Gagal menghapus daftar kontak.', 'error');
-    }
-  };
-
-  const handleAddRecipient = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedListId) return;
-    setIsSubmitting(true);
-    try {
-      await addDoc(collection(db, 'recipients'), {
-        ...newRecipient,
-        listId: selectedListId,
-        category: selectedList?.name,
-        createdAt: serverTimestamp()
-      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'recipients'));
-      setNewRecipient({ name: '', phone: '', region: '', birthDate: '', regionAnniversaryDate: '' });
-      setIsAddingRecipient(false);
-      addToast('Kontak berhasil ditambahkan!', 'success');
-    } catch (error) {
-      addToast('Gagal menambahkan kontak.', 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleDeleteRecipient = async (id: string) => {
-    if (!confirm('Hapus kontak ini?')) return;
-    try {
-      await deleteDoc(doc(db, 'recipients', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `recipients/${id}`));
-      addToast('Kontak berhasil dihapus.', 'success');
-    } catch (error) {
-      addToast('Gagal menghapus kontak.', 'error');
-    }
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !selectedListId) return;
-
-    addToast('Sedang memproses file CSV...', 'info');
-
-    Papa.parse(file, {
-      header: true,
-      complete: async (results) => {
-        try {
-          const batch = writeBatch(db);
-          let count = 0;
-          results.data.forEach((row: any) => {
-            if (row.name && row.phone) {
-              const newDoc = doc(collection(db, 'recipients'));
-              batch.set(newDoc, {
-                name: row.name,
-                phone: row.phone,
-                listId: selectedListId,
-                category: selectedList?.name,
-                region: row.region || '',
-                birthDate: row.birthDate || '',
-                regionAnniversaryDate: row.regionAnniversaryDate || '',
-                createdAt: serverTimestamp()
-              });
-              count++;
-            }
-          });
-          await batch.commit().catch(err => handleFirestoreError(err, OperationType.WRITE, 'recipients/batch'));
-          addToast(`${count} kontak berhasil diimport!`, 'success');
-        } catch (error) {
-          addToast('Gagal mengimport file CSV.', 'error');
-        }
+    const handleAddList = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setIsSubmitting(true);
+      try {
+        await apiClient.post('/contact-lists', newList);
+        setNewList({ name: '', description: '' });
+        setIsAddingList(false);
+        addToast('Daftar kontak berhasil dibuat!', 'success');
+        // Refresh local data (simplistic, could be optimized)
+        const updatedLists = await apiClient.get('/contact-lists');
+        setContactLists(updatedLists);
+      } catch (error) {
+        addToast('Gagal membuat daftar kontak.', 'error');
+      } finally {
+        setIsSubmitting(false);
       }
-    });
-  };
+    };
+
+    const handleDeleteList = async (id: string) => {
+      if (!confirm('Hapus daftar kontak ini?')) return;
+      try {
+        await apiClient.delete(`/contact-lists/${id}`);
+        if (selectedListId === id) setSelectedListId(null);
+        addToast('Daftar kontak berhasil dihapus.', 'success');
+        setContactLists(prev => prev.filter(l => l.id !== id));
+      } catch (error) {
+        addToast('Gagal menghapus daftar kontak.', 'error');
+      }
+    };
+
+    const handleAddRecipient = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!selectedListId) return;
+      setIsSubmitting(true);
+      try {
+        await apiClient.post(`/contact-lists/${selectedListId}/recipients`, {
+          ...newRecipient
+        });
+        setNewRecipient({ name: '', phone: '', region: '' });
+        setIsAddingRecipient(false);
+        addToast('Kontak berhasil ditambahkan!', 'success');
+        const updatedRecipients = await apiClient.get(`/contact-lists/${selectedListId}/recipients`);
+        setRecipients(prev => [...prev.filter(r => r.listId !== selectedListId), ...updatedRecipients]);
+      } catch (error) {
+        addToast('Gagal menambahkan kontak.', 'error');
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+
+    const handleDeleteRecipient = async (id: string) => {
+      if (!confirm('Hapus kontak ini?')) return;
+      try {
+        await apiClient.delete(`/recipients/${id}`);
+        addToast('Kontak berhasil dihapus.', 'success');
+        setRecipients(prev => prev.filter(r => r.id !== id));
+      } catch (error) {
+        addToast('Gagal menghapus kontak.', 'error');
+      }
+    };
+
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || !selectedListId) return;
+
+      addToast('Sedang memproses file CSV...', 'info');
+
+      Papa.parse(file, {
+        header: true,
+        complete: async (results) => {
+          try {
+            await apiClient.post(`/contact-lists/${selectedListId}/import`, {
+              recipients: results.data.filter((r: any) => r.name && r.phone)
+            });
+            addToast(`Kontak berhasil diimport!`, 'success');
+            const updatedRecipients = await apiClient.get(`/contact-lists/${selectedListId}/recipients`);
+            setRecipients(prev => [...prev.filter(r => r.listId !== selectedListId), ...updatedRecipients]);
+          } catch (error) {
+            addToast('Gagal mengimport file CSV.', 'error');
+          }
+        }
+      });
+    };
 
   return (
     <motion.div 
@@ -1469,14 +1449,14 @@ const BroadcastForm = ({ type, recipients, contactLists, user, templates, onSucc
       return;
     }
 
-    const isScheduled = !!scheduledDate && !isDraft;
+    setSending(true);
     
-    let finalMediaUrl = formData.mediaUrl;
+    try {
+      let finalMediaUrl = formData.mediaUrl;
 
-    // 1. Upload file if selected
-    if (mediaFile) {
-      setIsUploading(true);
-      try {
+      // 1. Upload file to Firebase Storage if selected (optional, can be moved to Laravel)
+      if (mediaFile) {
+        setIsUploading(true);
         const storageRef = ref(storage, `broadcasts/${Date.now()}_${mediaFile.name}`);
         const uploadTask = uploadBytesResumable(storageRef, mediaFile);
 
@@ -1486,10 +1466,7 @@ const BroadcastForm = ({ type, recipients, contactLists, user, templates, onSucc
               const p = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
               setUploadProgress(p);
             }, 
-            (error) => {
-              console.error("Upload error:", error);
-              reject(error);
-            }, 
+            (error) => reject(error), 
             async () => {
               const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
               resolve(downloadUrl);
@@ -1497,103 +1474,39 @@ const BroadcastForm = ({ type, recipients, contactLists, user, templates, onSucc
           );
         });
         setIsUploading(false);
-      } catch (error) {
-        console.error("File upload failed:", error);
-        addToast('Gagal mengupload file media.', 'error');
-        setIsUploading(false);
-        return;
       }
-    }
 
-    setSending(true);
-    const targetRecipients = recipients.filter(r => selectedIds.includes(r.id));
-    
-    if (targetRecipients.length === 0 && !isDraft) {
-      addToast('Tidak ada recipient yang dipilih.', 'error');
-      setSending(false);
-      return;
-    }
-
-    try {
-      const broadcastRef = await addDoc(collection(db, 'broadcasts'), {
+      // 2. Delegate to Laravel API
+      await apiClient.post('/broadcasts', {
         title: formData.title,
         content: formData.content,
-        mediaUrl: finalMediaUrl || null,
-        mediaType: config.media === 'video' ? 'video' : 'image',
         category: config.label,
-        status: isDraft ? 'draft' : (isScheduled ? 'scheduled' : 'sending'),
-        recipientCount: targetRecipients.length,
-        successCount: 0,
-        failedCount: 0,
-        createdAt: serverTimestamp(),
-        scheduledAt: isScheduled ? Timestamp.fromDate(new Date(scheduledDate)) : null,
-        authorUid: user.uid
-      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'broadcasts'));
+        target_list_id: formData.targetListId,
+        recipient_ids: selectedIds,
+        media_url: finalMediaUrl || null,
+        media_type: config.media === 'video' ? 'video' : 'image',
+        scheduled_at: scheduledDate || null,
+        author_uid: user.uid,
+        is_draft: isDraft
+      });
 
-      if (!broadcastRef) return;
-
-      if (isDraft) {
-        addToast('Broadcast berhasil disimpan sebagai draft.', 'success');
-        onSuccess();
-        return;
-      }
-
-      if (isScheduled) {
-        addToast('Broadcast berhasil dijadwalkan.', 'success');
-        onSuccess();
-        return;
-      }
-
-      let successCount = 0;
-      let failedCount = 0;
-
-      for (let i = 0; i < targetRecipients.length; i++) {
-        const r = targetRecipients[i];
-        setCurrentRecipient(r.name);
-        
-        // Replace variables in content
-        const personalizedContent = formData.content
-          .replace(/{{nama}}/g, r.name)
-          .replace(/{{wilayah}}/g, r.region || '')
-          .replace(/{{jabatan}}/g, r.category || '');
-
-        const res = await sendWatzapMessage(
-          r.phone, 
-          personalizedContent, 
-          finalMediaUrl || undefined, 
-          config.media as any
-        );
-
-        const logStatus = res.status === 'success' ? 'success' : 'failed';
-        if (logStatus === 'success') successCount++;
-        else failedCount++;
-
-        await addDoc(collection(db, 'broadcasts', broadcastRef.id, 'logs'), {
-          broadcastId: broadcastRef.id,
-          recipientPhone: r.phone,
-          status: logStatus,
-          errorMessage: res.message || null,
-          sentAt: serverTimestamp()
-        }).catch(err => handleFirestoreError(err, OperationType.CREATE, `broadcasts/${broadcastRef.id}/logs`));
-
-        setProgress(Math.round(((i + 1) / targetRecipients.length) * 100));
-      }
-
-      await updateDoc(broadcastRef, {
-        status: 'completed',
-        successCount,
-        failedCount
-      }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `broadcasts/${broadcastRef.id}`));
-
+      addToast(isDraft ? 'Draft disimpan!' : 'Broadcast telah masuk antrean!', 'success');
       onSuccess();
+
+      // Refresh history data
+      const updatedBroadcasts = await apiClient.get('/broadcasts');
+      setBroadcasts(updatedBroadcasts);
+
     } catch (error) {
-      console.error(error);
-      addToast('Terjadi kesalahan saat mengirim broadcast.', 'error');
+      console.error("Broadcast failed:", error);
+      addToast('Gagal memproses broadcast.', 'error');
     } finally {
       setSending(false);
-      setCurrentRecipient('');
+      setUploadProgress(0);
+      setIsUploading(false);
     }
   };
+
 
   return (
     <motion.div 
