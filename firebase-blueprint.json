@@ -1,5 +1,17 @@
 {
   "entities": {
+    "ContactList": {
+      "title": "ContactList",
+      "description": "A group of recipients.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "createdAt"]
+    },
     "Recipient": {
       "title": "Recipient",
       "description": "A contact who can receive WhatsApp broadcasts.",
@@ -8,11 +20,12 @@
         "id": { "type": "string" },
         "name": { "type": "string" },
         "phone": { "type": "string" },
-        "category": { "type": "string", "enum": ["Kepala Daerah", "Internal Kemendagri", "Dirjen Otda"] },
+        "listId": { "type": "string" },
+        "category": { "type": "string" },
         "region": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["name", "phone", "category"]
+      "required": ["name", "phone", "listId"]
     },
     "Broadcast": {
       "title": "Broadcast",
@@ -51,6 +64,10 @@
     }
   },
   "firestore": {
+    "/contact_lists/{listId}": {
+      "schema": "ContactList",
+      "description": "Collection of contact groups."
+    },
     "/recipients/{recipientId}": {
       "schema": "Recipient",
       "description": "Collection of recipients."

@@ -2,12 +2,20 @@
 // Assumed Data Model
 // ===============================================================
 //
+// Collection: contact_lists
+// Document ID: {listId}
+// Fields:
+//   - name: string (required, size < 100)
+//   - description: string (optional, size < 500)
+//   - createdAt: timestamp (required)
+//
 // Collection: recipients
 // Document ID: {recipientId}
 // Fields:
 //   - name: string (required, size < 100)
 //   - phone: string (required, size < 20)
-//   - category: string (required, enum: ["Kepala Daerah", "Internal Kemendagri", "Dirjen Otda"])
+//   - listId: string (required)
+//   - category: string (optional, size < 100)
 //   - region: string (optional, size < 100)
 //   - createdAt: timestamp (required)
 //
@@ -51,8 +59,11 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-          (request.auth.token.email == "sigittekno565@gmail.com" && request.auth.token.email_verified == true));
+        (
+          request.auth.token.email == "sigittekno565@gmail.com" ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
     }
 
     function isDocOwner() {
@@ -67,10 +78,17 @@ service cloud.firestore {
       return request.resource.data.keys().hasOnly(fields);
     }
 
+    function isValidContactList(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             (!('description' in data) || (data.description is string && data.description.size() < 500)) &&
+             data.createdAt is timestamp;
+    }
+
     function isValidRecipient(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
              data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
-             data.category in ["Kepala Daerah", "Internal Kemendagri", "Dirjen Otda"] &&
+             data.listId is string &&
+             (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
              (!('region' in data) || (data.region is string && data.region.size() < 100)) &&
              data.createdAt is timestamp;
     }
@@ -102,11 +120,15 @@ service cloud.firestore {
     // Collection Rules
     // ===============================================================
 
+    // Contact Lists
+    match /contact_lists/{listId} {
+      allow read, write: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
     // Recipients
     match /recipients/{recipientId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidRecipient(request.resource.data);
-      allow update: if isAuthenticated() && isValidRecipient(request.resource.data);
+      allow read, write: if isAuthenticated();
       allow delete: if isAdmin();
     }
 
@@ -131,6 +153,11 @@ service cloud.firestore {
                     (request.resource.data.role == 'user' || 
                      (request.auth.token.email == "sigittekno565@gmail.com" && request.auth.token.email_verified == true && request.resource.data.role == 'admin'));
       allow update: if isAdmin();
+    }
+
+    // Test connection
+    match /_test_connection_/{docId} {
+      allow read: if isAuthenticated();
     }
 
     // Default deny

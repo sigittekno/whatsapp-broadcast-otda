@@ -167,11 +167,19 @@ interface Toast {
 
 type NavItem = 'dashboard' | 'recipients' | 'history' | 'birthday' | 'hut' | 'agenda' | 'internal' | 'users';
 
+interface ContactList {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: any;
+}
+
 interface Recipient {
   id: string;
   name: string;
   phone: string;
-  category: string;
+  listId: string;
+  category?: string;
   region?: string;
   createdAt: any;
 }
@@ -328,6 +336,7 @@ export default function DashboardPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
+  const [contactLists, setContactLists] = useState<ContactList[]>([]);
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [watzapStatus, setWatzapStatus] = useState<any>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -418,6 +427,13 @@ export default function DashboardPage() {
       handleFirestoreError(error, OperationType.GET, 'recipients');
     });
 
+    const qLists = query(collection(db, 'contact_lists'), orderBy('createdAt', 'desc'));
+    const unsubLists = onSnapshot(qLists, (snapshot) => {
+      setContactLists(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ContactList)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'contact_lists');
+    });
+
     const qBroadcasts = query(collection(db, 'broadcasts'), orderBy('createdAt', 'desc'), limit(50));
     const unsubBroadcasts = onSnapshot(qBroadcasts, (snapshot) => {
       setBroadcasts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Broadcast)));
@@ -429,6 +445,7 @@ export default function DashboardPage() {
 
     return () => {
       unsubRecipients();
+      unsubLists();
       unsubBroadcasts();
     };
   }, [user]);
@@ -499,7 +516,7 @@ export default function DashboardPage() {
           <div className="p-8 max-w-7xl mx-auto">
             <AnimatePresence mode="wait">
               {activeTab === 'dashboard' && <DashboardOverview recipients={recipients} broadcasts={broadcasts} watzapStatus={watzapStatus} />}
-              {activeTab === 'recipients' && <RecipientManager recipients={recipients} addToast={addToast} />}
+              {activeTab === 'recipients' && <RecipientManager recipients={recipients} contactLists={contactLists} addToast={addToast} />}
               {activeTab === 'history' && <BroadcastHistory broadcasts={broadcasts} />}
               {activeTab === 'users' && isAdmin && <UserManager addToast={addToast} />}
               {['birthday', 'hut', 'agenda', 'internal'].includes(activeTab) && (
@@ -507,6 +524,7 @@ export default function DashboardPage() {
                   <BroadcastForm 
                     type={activeTab as any} 
                     recipients={recipients} 
+                    contactLists={contactLists}
                     user={user}
                     template={selectedTemplate}
                     onSuccess={() => {
@@ -656,52 +674,88 @@ const DashboardOverview = ({ recipients, broadcasts, watzapStatus }: { recipient
   );
 };
 
-const RecipientManager = ({ recipients, addToast }: { recipients: Recipient[], addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
-  const [isAdding, setIsAdding] = useState(false);
-  const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', category: 'Internal Kemendagri', region: '' });
+const RecipientManager = ({ recipients, contactLists, addToast }: { recipients: Recipient[], contactLists: ContactList[], addToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) => {
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [isAddingList, setIsAddingList] = useState(false);
+  const [newList, setNewList] = useState({ name: '', description: '' });
+  const [isAddingRecipient, setIsAddingRecipient] = useState(false);
+  const [newRecipient, setNewRecipient] = useState({ name: '', phone: '', region: '' });
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('All');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const filteredRecipients = recipients.filter(r => {
-    const matchesSearch = r.name.toLowerCase().includes(search.toLowerCase()) || r.phone.includes(search);
-    const matchesFilter = filter === 'All' || r.category === filter;
-    return matchesSearch && matchesFilter;
-  });
+  const selectedList = contactLists.find(l => l.id === selectedListId);
+  
+  const filteredRecipients = useMemo(() => {
+    return recipients.filter(r => {
+      const matchesList = r.listId === selectedListId;
+      const matchesSearch = r.name.toLowerCase().includes(search.toLowerCase()) || r.phone.includes(search);
+      return matchesList && matchesSearch;
+    });
+  }, [recipients, selectedListId, search]);
 
-  const handleAdd = async (e: React.FormEvent) => {
+  const handleAddList = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     try {
-      await addDoc(collection(db, 'recipients'), {
-        ...newRecipient,
+      await addDoc(collection(db, 'contact_lists'), {
+        ...newList,
         createdAt: serverTimestamp()
-      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'recipients'));
-      setNewRecipient({ name: '', phone: '', category: 'Internal Kemendagri', region: '' });
-      setIsAdding(false);
-      addToast('Recipient berhasil ditambahkan!', 'success');
+      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'contact_lists'));
+      setNewList({ name: '', description: '' });
+      setIsAddingList(false);
+      addToast('Daftar kontak berhasil dibuat!', 'success');
     } catch (error) {
-      console.error(error);
-      addToast('Gagal menambahkan recipient.', 'error');
+      addToast('Gagal membuat daftar kontak.', 'error');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Hapus recipient ini?')) {
-      try {
-        await deleteDoc(doc(db, 'recipients', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `recipients/${id}`));
-        addToast('Recipient berhasil dihapus.', 'success');
-      } catch (error) {
-        addToast('Gagal menghapus recipient.', 'error');
-      }
+  const handleDeleteList = async (id: string) => {
+    if (!confirm('Hapus daftar kontak ini? Kontak di dalamnya akan tetap ada di database tapi tidak terasosiasi dengan daftar ini.')) return;
+    try {
+      await deleteDoc(doc(db, 'contact_lists', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `contact_lists/${id}`));
+      if (selectedListId === id) setSelectedListId(null);
+      addToast('Daftar kontak berhasil dihapus.', 'success');
+    } catch (error) {
+      addToast('Gagal menghapus daftar kontak.', 'error');
+    }
+  };
+
+  const handleAddRecipient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedListId) return;
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'recipients'), {
+        ...newRecipient,
+        listId: selectedListId,
+        category: selectedList?.name,
+        createdAt: serverTimestamp()
+      }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'recipients'));
+      setNewRecipient({ name: '', phone: '', region: '' });
+      setIsAddingRecipient(false);
+      addToast('Kontak berhasil ditambahkan!', 'success');
+    } catch (error) {
+      addToast('Gagal menambahkan kontak.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteRecipient = async (id: string) => {
+    if (!confirm('Hapus kontak ini?')) return;
+    try {
+      await deleteDoc(doc(db, 'recipients', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, `recipients/${id}`));
+      addToast('Kontak berhasil dihapus.', 'success');
+    } catch (error) {
+      addToast('Gagal menghapus kontak.', 'error');
     }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !selectedListId) return;
 
     addToast('Sedang memproses file CSV...', 'info');
 
@@ -717,7 +771,8 @@ const RecipientManager = ({ recipients, addToast }: { recipients: Recipient[], a
               batch.set(newDoc, {
                 name: row.name,
                 phone: row.phone,
-                category: row.category || 'Internal Kemendagri',
+                listId: selectedListId,
+                category: selectedList?.name,
                 region: row.region || '',
                 createdAt: serverTimestamp()
               });
@@ -725,7 +780,7 @@ const RecipientManager = ({ recipients, addToast }: { recipients: Recipient[], a
             }
           });
           await batch.commit().catch(err => handleFirestoreError(err, OperationType.WRITE, 'recipients/batch'));
-          addToast(`${count} recipient berhasil diimport!`, 'success');
+          addToast(`${count} kontak berhasil diimport!`, 'success');
         } catch (error) {
           addToast('Gagal mengimport file CSV.', 'error');
         }
@@ -745,104 +800,147 @@ const RecipientManager = ({ recipients, addToast }: { recipients: Recipient[], a
           <h2 className="text-2xl font-bold text-gray-900">Recipient Management</h2>
           <p className="text-gray-500">Kelola daftar kontak penerima broadcast.</p>
         </div>
-        <div className="flex gap-2">
-          <label className="flex items-center gap-2 bg-white border border-gray-200 px-4 py-2 rounded-xl text-sm font-medium cursor-pointer hover:bg-gray-50">
-            <FileUp className="w-4 h-4" />
-            Import CSV
-            <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
-          </label>
+        {!selectedListId && (
           <button 
-            onClick={() => setIsAdding(true)}
+            onClick={() => setIsAddingList(true)}
             className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700"
           >
             <Plus className="w-4 h-4" />
-            Add Recipient
+            Buat Daftar Baru
           </button>
-        </div>
-      </div>
-
-      <div className="flex gap-4 mb-6">
-        <div className="flex-1 relative">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input 
-            type="text" 
-            placeholder="Search by name or phone..." 
-            className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-        <div className="flex items-center gap-2 bg-white border border-gray-200 px-3 py-2 rounded-xl">
-          <Filter className="w-4 h-4 text-gray-400" />
-          <select 
-            className="text-sm focus:outline-none bg-transparent"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          >
-            <option value="All">All Categories</option>
-            <option value="Kepala Daerah">Kepala Daerah</option>
-            <option value="Internal Kemendagri">Internal Kemendagri</option>
-            <option value="Dirjen Otda">Dirjen Otda</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <table className="w-full text-left">
-          <thead>
-            <tr className="bg-gray-50 border-bottom border-gray-100">
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Name</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Phone</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Category</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Region</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            <AnimatePresence mode="popLayout">
-              {filteredRecipients.map((r) => (
-                <motion.tr 
-                  key={r.id} 
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  layout
-                  className="hover:bg-gray-50 transition-colors"
-                >
-                  <td className="px-6 py-4 text-sm font-medium text-gray-900">{r.name}</td>
-                  <td className="px-6 py-4 text-sm text-gray-600">{r.phone}</td>
-                  <td className="px-6 py-4">
-                    <span className={cn(
-                      "px-2 py-1 rounded-full text-[10px] font-bold uppercase",
-                      r.category === 'Kepala Daerah' ? "bg-blue-100 text-blue-700" :
-                      r.category === 'Internal Kemendagri' ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"
-                    )}>
-                      {r.category}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-500">{r.region || '-'}</td>
-                  <td className="px-6 py-4 text-right">
-                    <motion.button 
-                      whileHover={{ scale: 1.1, color: '#ef4444' }}
-                      whileTap={{ scale: 0.9 }}
-                      onClick={() => handleDelete(r.id)}
-                      className="p-2 text-gray-400 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </motion.button>
-                  </td>
-                </motion.tr>
-              ))}
-            </AnimatePresence>
-          </tbody>
-        </table>
-        {filteredRecipients.length === 0 && (
-          <div className="p-12 text-center text-gray-500">No recipients found.</div>
         )}
       </div>
 
+      {!selectedListId ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {contactLists.map((list) => (
+            <motion.div 
+              key={list.id}
+              whileHover={{ y: -4 }}
+              className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 group relative"
+            >
+              <div className="flex justify-between items-start mb-4">
+                <div className="p-3 rounded-xl bg-blue-50 text-blue-600">
+                  <Users className="w-6 h-6" />
+                </div>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleDeleteList(list.id); }}
+                  className="p-2 text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 mb-1">{list.name}</h3>
+              <p className="text-sm text-gray-500 mb-4 line-clamp-2">{list.description || 'Tidak ada deskripsi.'}</p>
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                  {recipients.filter(r => r.listId === list.id).length} Kontak
+                </span>
+                <button 
+                  onClick={() => setSelectedListId(list.id)}
+                  className="text-sm font-bold text-blue-600 hover:underline"
+                >
+                  Lihat Kontak →
+                </button>
+              </div>
+            </motion.div>
+          ))}
+          {contactLists.length === 0 && (
+            <div className="col-span-full py-12 text-center bg-white rounded-2xl border border-dashed border-gray-200">
+              <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500">Belum ada daftar kontak. Silakan buat daftar baru.</p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setSelectedListId(null)}
+              className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
+            >
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+            <div>
+              <h3 className="text-xl font-bold text-gray-900">{selectedList?.name}</h3>
+              <p className="text-sm text-gray-500">{selectedList?.description}</p>
+            </div>
+            <div className="ml-auto flex gap-2">
+              <label className="flex items-center gap-2 bg-white border border-gray-200 px-4 py-2 rounded-xl text-sm font-medium cursor-pointer hover:bg-gray-50">
+                <FileUp className="w-4 h-4" />
+                Import CSV
+                <input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+              </label>
+              <button 
+                onClick={() => setIsAddingRecipient(true)}
+                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-blue-700"
+              >
+                <Plus className="w-4 h-4" />
+                Tambah Kontak
+              </button>
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <div className="flex-1 relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input 
+                type="text" 
+                placeholder="Cari berdasarkan nama atau nomor..." 
+                className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-gray-50 border-bottom border-gray-100">
+                  <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Nama</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Nomor WA</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase">Wilayah</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                <AnimatePresence mode="popLayout">
+                  {filteredRecipients.map((r) => (
+                    <motion.tr 
+                      key={r.id} 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      layout
+                      className="hover:bg-gray-50 transition-colors"
+                    >
+                      <td className="px-6 py-4 text-sm font-medium text-gray-900">{r.name}</td>
+                      <td className="px-6 py-4 text-sm text-gray-600">{r.phone}</td>
+                      <td className="px-6 py-4 text-sm text-gray-500">{r.region || '-'}</td>
+                      <td className="px-6 py-4 text-right">
+                        <button 
+                          onClick={() => handleDeleteRecipient(r.id)}
+                          className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </motion.tr>
+                  ))}
+                </AnimatePresence>
+              </tbody>
+            </table>
+            {filteredRecipients.length === 0 && (
+              <div className="p-12 text-center text-gray-500">Belum ada kontak di daftar ini.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Tambah Daftar */}
       <AnimatePresence>
-        {isAdding && (
+        {isAddingList && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
@@ -850,61 +948,110 @@ const RecipientManager = ({ recipients, addToast }: { recipients: Recipient[], a
               exit={{ opacity: 0, scale: 0.95 }}
               className="bg-white rounded-2xl p-8 max-w-md w-full shadow-xl"
             >
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-gray-900">Add New Recipient</h3>
-                <button onClick={() => setIsAdding(false)}><X className="w-6 h-6 text-gray-400" /></button>
-              </div>
-              <form onSubmit={handleAdd} className="space-y-4">
+              <h3 className="text-xl font-bold text-gray-900 mb-6">Buat Daftar Kontak Baru</h3>
+              <form onSubmit={handleAddList} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Full Name</label>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Daftar</label>
                   <input 
                     required
                     type="text" 
+                    placeholder="Contoh: Kepala Daerah"
+                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={newList.name}
+                    onChange={(e) => setNewList({ ...newList, name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Deskripsi</label>
+                  <textarea 
+                    placeholder="Deskripsi singkat..."
+                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={newList.description}
+                    onChange={(e) => setNewList({ ...newList, description: e.target.value })}
+                  />
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    type="button"
+                    onClick={() => setIsAddingList(false)}
+                    className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {isSubmitting ? 'Memproses...' : 'Simpan'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal Tambah Kontak */}
+      <AnimatePresence>
+        {isAddingRecipient && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl p-8 max-w-md w-full shadow-xl"
+            >
+              <h3 className="text-xl font-bold text-gray-900 mb-6">Tambah Kontak Baru</h3>
+              <form onSubmit={handleAddRecipient} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nama Lengkap</label>
+                  <input 
+                    required
+                    type="text" 
+                    placeholder="Nama kontak..."
                     className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                     value={newRecipient.name}
-                    onChange={(e) => setNewRecipient({...newRecipient, name: e.target.value})}
+                    onChange={(e) => setNewRecipient({ ...newRecipient, name: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Phone Number (e.g. 628123456789)</label>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nomor WhatsApp</label>
                   <input 
                     required
-                    type="text" 
+                    type="tel" 
+                    placeholder="628123456789"
                     className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                     value={newRecipient.phone}
-                    onChange={(e) => setNewRecipient({...newRecipient, phone: e.target.value})}
+                    onChange={(e) => setNewRecipient({ ...newRecipient, phone: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Category</label>
-                  <select 
-                    className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    value={newRecipient.category}
-                    onChange={(e) => setNewRecipient({...newRecipient, category: e.target.value})}
-                  >
-                    <option value="Kepala Daerah">Kepala Daerah</option>
-                    <option value="Internal Kemendagri">Internal Kemendagri</option>
-                    <option value="Dirjen Otda">Dirjen Otda</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Region (Optional)</label>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Wilayah (Opsional)</label>
                   <input 
                     type="text" 
+                    placeholder="Contoh: Jawa Barat"
                     className="w-full px-4 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
                     value={newRecipient.region}
-                    onChange={(e) => setNewRecipient({...newRecipient, region: e.target.value})}
+                    onChange={(e) => setNewRecipient({ ...newRecipient, region: e.target.value })}
                   />
                 </div>
-                <motion.button 
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  disabled={isSubmitting}
-                  type="submit"
-                  className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-colors mt-4 flex items-center justify-center gap-2"
-                >
-                  {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Recipient'}
-                </motion.button>
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    type="button"
+                    onClick={() => setIsAddingRecipient(false)}
+                    className="flex-1 px-4 py-2 border border-gray-200 rounded-xl text-sm font-bold text-gray-500 hover:bg-gray-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {isSubmitting ? 'Memproses...' : 'Simpan'}
+                  </button>
+                </div>
               </form>
             </motion.div>
           </div>
@@ -960,7 +1107,7 @@ const BroadcastList = ({ type, broadcasts, onCreateNew }: { type: 'birthday' | '
             <h3 className="text-lg font-bold text-gray-900 mb-1">Belum ada broadcast</h3>
             <p className="text-gray-500 mb-6">Mulai kirim broadcast pertama Anda untuk kategori ini.</p>
             <button 
-              onClick={onCreateNew}
+              onClick={() => onCreateNew()}
               className="text-blue-600 font-bold hover:underline"
             >
               Klik di sini untuk membuat
@@ -1011,12 +1158,12 @@ const BroadcastList = ({ type, broadcasts, onCreateNew }: { type: 'birthday' | '
   );
 };
 
-const BroadcastForm = ({ type, recipients, user, onSuccess, onCancel, addToast, template }: { type: 'birthday' | 'hut' | 'agenda' | 'internal', recipients: Recipient[], user: User, onSuccess: () => void, onCancel: () => void, addToast: (msg: string, type?: 'success' | 'error' | 'info') => void, template?: Broadcast }) => {
+const BroadcastForm = ({ type, recipients, contactLists, user, onSuccess, onCancel, addToast, template }: { type: 'birthday' | 'hut' | 'agenda' | 'internal', recipients: Recipient[], contactLists: ContactList[], user: User, onSuccess: () => void, onCancel: () => void, addToast: (msg: string, type?: 'success' | 'error' | 'info') => void, template?: Broadcast }) => {
   const [formData, setFormData] = useState({
     title: template?.title || '',
     content: template?.content || '',
     mediaUrl: template?.mediaUrl || '',
-    targetCategory: 'All'
+    targetListId: 'All'
   });
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -1040,33 +1187,38 @@ const BroadcastForm = ({ type, recipients, user, onSuccess, onCancel, addToast, 
   }, [mediaFile]);
 
   const typeConfig = {
-    birthday: { label: 'Ulang Tahun Kepala Daerah', icon: Cake, color: 'text-pink-500', media: 'video', defaultTarget: 'Kepala Daerah' },
-    hut: { label: 'HUT Daerah', icon: Flag, color: 'text-blue-500', media: 'video', defaultTarget: 'Kepala Daerah' },
-    agenda: { label: 'Agenda Dirjen Otda', icon: Calendar, color: 'text-orange-500', media: 'image', defaultTarget: 'Dirjen Otda' },
-    internal: { label: 'Internal Kemendagri Otda', icon: Building2, color: 'text-emerald-500', media: 'image', defaultTarget: 'Internal Kemendagri' },
+    birthday: { label: 'Ulang Tahun Kepala Daerah', icon: Cake, color: 'text-pink-500', media: 'video', defaultTargetName: 'Kepala Daerah' },
+    hut: { label: 'HUT Daerah', icon: Flag, color: 'text-blue-500', media: 'video', defaultTargetName: 'Kepala Daerah' },
+    agenda: { label: 'Agenda Dirjen Otda', icon: Calendar, color: 'text-orange-500', media: 'image', defaultTargetName: 'Dirjen Otda' },
+    internal: { label: 'Internal Kemendagri Otda', icon: Building2, color: 'text-emerald-500', media: 'image', defaultTargetName: 'Internal Kemendagri' },
   };
 
   const config = typeConfig[type];
 
   const filteredRecipients = useMemo(() => {
     return recipients.filter(r => {
-      const matchCategory = formData.targetCategory === 'All' || r.category === formData.targetCategory;
+      const matchCategory = formData.targetListId === 'All' || r.listId === formData.targetListId;
       const matchSearch = r.name.toLowerCase().includes(searchTerm.toLowerCase()) || r.phone.includes(searchTerm);
       return matchCategory && matchSearch;
     });
-  }, [recipients, formData.targetCategory, searchTerm]);
+  }, [recipients, formData.targetListId, searchTerm]);
 
   useEffect(() => {
-    setFormData(prev => ({ ...prev, targetCategory: config.defaultTarget }));
-  }, [type, config.defaultTarget]);
+    const defaultList = contactLists.find(l => l.name.toLowerCase().includes(config.defaultTargetName.toLowerCase()));
+    if (defaultList) {
+      setFormData(prev => ({ ...prev, targetListId: defaultList.id }));
+    } else {
+      setFormData(prev => ({ ...prev, targetListId: 'All' }));
+    }
+  }, [type, config.defaultTargetName, contactLists]);
 
   useEffect(() => {
-    // Auto select all in category when category changes
+    // Auto select all in list when list changes
     const ids = recipients
-      .filter(r => formData.targetCategory === 'All' || r.category === formData.targetCategory)
+      .filter(r => formData.targetListId === 'All' || r.listId === formData.targetListId)
       .map(r => r.id);
     setSelectedIds(ids);
-  }, [formData.targetCategory, recipients]);
+  }, [formData.targetListId, recipients]);
 
   const toggleRecipient = (id: string) => {
     setSelectedIds(prev => 
@@ -1155,6 +1307,8 @@ const BroadcastForm = ({ type, recipients, user, onSuccess, onCancel, addToast, 
         scheduledAt: isScheduled ? Timestamp.fromDate(new Date(scheduledDate)) : null,
         authorUid: user.uid
       }).catch(err => handleFirestoreError(err, OperationType.CREATE, 'broadcasts'));
+
+      if (!broadcastRef) return;
 
       if (isDraft) {
         addToast('Broadcast berhasil disimpan sebagai draft.', 'success');
@@ -1253,16 +1407,16 @@ const BroadcastForm = ({ type, recipients, user, onSuccess, onCancel, addToast, 
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Target Kategori</label>
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Pilih Daftar Kontak</label>
             <select 
               className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-              value={formData.targetCategory}
-              onChange={(e) => setFormData({...formData, targetCategory: e.target.value})}
+              value={formData.targetListId}
+              onChange={(e) => setFormData({...formData, targetListId: e.target.value})}
             >
-              <option value="All">Semua Kategori</option>
-              <option value="Kepala Daerah">Kepala Daerah</option>
-              <option value="Internal Kemendagri">Internal Kemendagri</option>
-              <option value="Dirjen Otda">Dirjen Otda</option>
+              <option value="All">Semua Kontak</option>
+              {contactLists.map(list => (
+                <option key={list.id} value={list.id}>{list.name}</option>
+              ))}
             </select>
           </div>
 
