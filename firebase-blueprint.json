@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "Recipient": {
+      "title": "Recipient",
+      "description": "A contact who can receive WhatsApp broadcasts.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "category": { "type": "string", "enum": ["Kepala Daerah", "Internal Kemendagri", "Dirjen Otda"] },
+        "region": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "phone", "category"]
+    },
+    "Broadcast": {
+      "title": "Broadcast",
+      "description": "A broadcast message sent to multiple recipients.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "mediaType": { "type": "string", "enum": ["text", "image", "video"] },
+        "category": { "type": "string", "enum": ["Birthday", "Hut Daerah", "Agenda Dirjen", "Internal Kemendagri"] },
+        "status": { "type": "string", "enum": ["pending", "sending", "completed", "failed"] },
+        "recipientCount": { "type": "integer" },
+        "successCount": { "type": "integer" },
+        "failedCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "authorUid": { "type": "string" }
+      },
+      "required": ["title", "content", "category", "status", "authorUid"]
+    },
+    "BroadcastLog": {
+      "title": "BroadcastLog",
+      "description": "A log entry for a single message sent to a recipient.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "broadcastId": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "recipientPhone": { "type": "string" },
+        "status": { "type": "string", "enum": ["success", "failed"] },
+        "errorMessage": { "type": "string" },
+        "sentAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["broadcastId", "recipientPhone", "status", "sentAt"]
+    }
+  },
+  "firestore": {
+    "/recipients/{recipientId}": {
+      "schema": "Recipient",
+      "description": "Collection of recipients."
+    },
+    "/broadcasts/{broadcastId}": {
+      "schema": "Broadcast",
+      "description": "Collection of broadcast campaigns."
+    },
+    "/broadcasts/{broadcastId}/logs/{logId}": {
+      "schema": "BroadcastLog",
+      "description": "Logs for each recipient in a broadcast."
+    }
+  }
+}

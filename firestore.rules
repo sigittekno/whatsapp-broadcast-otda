@@ -1,0 +1,141 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: recipients
+// Document ID: {recipientId}
+// Fields:
+//   - name: string (required, size < 100)
+//   - phone: string (required, size < 20)
+//   - category: string (required, enum: ["Kepala Daerah", "Internal Kemendagri", "Dirjen Otda"])
+//   - region: string (optional, size < 100)
+//   - createdAt: timestamp (required)
+//
+// Collection: broadcasts
+// Document ID: {broadcastId}
+// Fields:
+//   - title: string (required, size < 200)
+//   - content: string (required, size < 2000)
+//   - mediaUrl: string (optional, size < 1000)
+//   - mediaType: string (required, enum: ["text", "image", "video"])
+//   - category: string (required, enum: ["Birthday", "Hut Daerah", "Agenda Dirjen", "Internal Kemendagri"])
+//   - status: string (required, enum: ["pending", "sending", "completed", "failed"])
+//   - recipientCount: integer (optional)
+//   - successCount: integer (optional)
+//   - failedCount: integer (optional)
+//   - createdAt: timestamp (required)
+//   - authorUid: string (required)
+//
+// Collection: broadcasts/{broadcastId}/logs
+// Document ID: {logId}
+// Fields:
+//   - broadcastId: string (required)
+//   - recipientPhone: string (required, size < 20)
+//   - status: string (required, enum: ["success", "failed"])
+//   - errorMessage: string (optional, size < 500)
+//   - sentAt: timestamp (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "sigittekno565@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.authorUid;
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidRecipient(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
+             data.category in ["Kepala Daerah", "Internal Kemendagri", "Dirjen Otda"] &&
+             (!('region' in data) || (data.region is string && data.region.size() < 100)) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidBroadcast(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.content is string && data.content.size() > 0 && data.content.size() < 5000 &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() < 1000)) &&
+             data.mediaType in ["text", "image", "video"] &&
+             data.category in ["Ulang Tahun Kepala Daerah", "HUT Daerah", "Agenda Dirjen Otda", "Internal Kemendagri Otda"] &&
+             data.status in ["draft", "scheduled", "pending", "sending", "completed", "failed"] &&
+             data.createdAt is timestamp &&
+             data.authorUid is string && data.authorUid == request.auth.uid &&
+             (!('scheduledAt' in data) || data.scheduledAt == null || data.scheduledAt is timestamp) &&
+             (!('recipientCount' in data) || data.recipientCount is int) &&
+             (!('successCount' in data) || data.successCount is int) &&
+             (!('failedCount' in data) || data.failedCount is int);
+    }
+
+    function isValidLog(data) {
+      return data.broadcastId is string &&
+             data.recipientPhone is string && data.recipientPhone.size() < 20 &&
+             data.status in ["success", "failed"] &&
+             (!('errorMessage' in data) || (data.errorMessage is string && data.errorMessage.size() < 500)) &&
+             data.sentAt is timestamp;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Recipients
+    match /recipients/{recipientId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidRecipient(request.resource.data);
+      allow update: if isAuthenticated() && isValidRecipient(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Broadcasts
+    match /broadcasts/{broadcastId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidBroadcast(request.resource.data);
+      allow update: if isAuthenticated() && isValidBroadcast(request.resource.data) && (isDocOwner() || isAdmin());
+      allow delete: if isAdmin();
+
+      // Logs subcollection
+      match /logs/{logId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidLog(request.resource.data);
+      }
+    }
+
+    // Users (for role management)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == userId && 
+                    (request.resource.data.role == 'user' || 
+                     (request.auth.token.email == "sigittekno565@gmail.com" && request.auth.token.email_verified == true && request.resource.data.role == 'admin'));
+      allow update: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
